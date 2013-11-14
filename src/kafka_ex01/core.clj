@@ -1,43 +1,90 @@
 (ns kafka-ex01.core
   (:use [clj-kafka.core :only [with-resource]])
   (:require [clj-kafka.producer :as p])
-  (:require [clj-kafka.zk :as zk])
+  (:require [zookeeper :as zk])
+  (:require [clj-kafka.zk :as kzk])
   (:require [clj-kafka.consumer.simple :as s])
-  (:require [clj-kafka.consumer.zk :as zkc]))
+  (:require [clj-kafka.consumer.zk :as zkc])
+  (:gen-class))
 
-
-(def zk-config {"zookeeper.connect" "localhost:2181"})
 (defn brokers
   "Get brokers from zookeeper"
-  [] (zk/brokers zk-config))
+  [zookeeper-cli]
+  (prn "brokers:")
+  (prn "-> " (kzk/brokers {"zookeeper.connect" zookeeper-cli})))
 
 (defn controller
   "Get leader node"
-  [] (zk/controller zk-config))
+  [zookeeper-cli]
+  (prn "leader:")
+  (prn "-> " (kzk/controller {"zookeeper.connect" zookeeper-cli})))
 
 (defn topics
   "Get topics"
-  [] (zk/topics zk-config))
+  [zookeeper-cli]
+  (let [topics (kzk/topics  {"zookeeper.connect" zookeeper-cli})]
+    (if (= 0 (count topics)) (prn "no topic") (do (prn "topics:")(prn topics)))))
 
-(def producer (p/producer {"metadata.broker.list" "localhost:9092"
+(defn groups
+  "Get groups"
+  [zookeeper-cli]
+  (let [cli (zk/connect zookeeper-cli)
+        node "/consumers"]
+    (if (zk/exists cli node) (do (prn "groups:")(prn (zk/children cli node))) (prn "no group"))))
+  
+(defn get-offset
+  "Get the offset of a topic"
+  ([zookeeper-cli topic group-id] (get-offset zookeeper-cli topic group-id 0))
+  ([zookeeper-cli topic group-id partition-id]
+  (let [cli (zk/connect zookeeper-cli)
+        node (str "/consumers/" group-id "/offsets/" topic "/0")
+        node-exists? (zk/exists cli node)]
+    (if node-exists? (String. (:data (zk/data cli node))) 0))))
+
+(defn send-item [kafka-cli topic message]
+  (let [producer (p/producer {"metadata.broker.list" kafka-cli
                       "serializer.class" "kafka.serializer.DefaultEncoder"
-                      "partitioner.class" "kafka.producer.DefaultPartitioner"}))
+                      "partitioner.class" "kafka.producer.DefaultPartitioner"})]
+    (p/send-message producer (p/message topic (.getBytes message)))))
 
-(def topic "test")
-(defn send-item [item] (p/send-message producer (p/message topic (.getBytes item))))
+(defn get-items [kafka-cli topic group-id zookeeper-cli]
+  (let [part 0
+        offset 0
+        fetch-size 4096
+        client-id "cli-id"
+        simple-consumer (s/consumer (-> kafka-cli (clojure.string/split #":") first) (-> kafka-cli (clojure.string/split #":") second read-string) client-id)
+        messages (s/messages simple-consumer client-id topic part offset fetch-size)]
+    (prn "messages")
+    (prn "count= " (count messages))
+    (prn "offset=" (get-offset zookeeper-cli topic group-id))
+    (prn "payload: ")
+    (clojure.pprint/pprint (map #(-> % (:value %) (String.)) messages))))
 
+(defn -main [& args]
+  (prn "use help to learn how to use this tool")
+  (case (first args)
+    "get-topics" (topics (second args))
+    "get-leader" (controller (second args))
+    "get-brokers" (brokers (second args))
+    "get-groups" (groups (second args))
+    "get-items" (get-items (nth args 1) (nth args 2) (nth args 3) (nth args 4))
+    "send-item" (send-item (nth args 1) (nth args 2) (nth args 3))
+    "help" (do 
+                (prn "arg 0 : action -> get-items|get-topics|get-leader|get-groups|get-brokers|send-item")
+                (prn "GET-ITEMS   - lein run get-items localhost:9092 NOTIFICATIONS-TOPIC NOTIFICATIONS-GROUP localhost:2181")
+                (prn "SEND-ITEM   - lein run send-item localhost:9092 topic message")
+                (prn "GET-TOPICS  - lein run get-topics localhost:2181")
+                (prn "GET-LEADER  - lein run get-leader localhost:2181")
+                (prn "GET-GROUPS - lein run get-groups localhost:2181")
+                (prn "GET-BROKERS - lein run get-brokers localhost:2181"))
+    "default"))
 
-(def client-id "cli-id")
-(def simple-consumer (s/consumer "localhost" 9092 client-id))
-(defn get-items [] (let [part 0
-                         offset 0
-                         fetch-size 4096]
-                     (s/messages simple-consumer client-id topic part offset fetch-size)))
+;;-----------
 
-(defn do-for-each [item] (-> item :value (String.) prn))
+#_(defn do-for-each [item] (-> item :value (String.) prn))
 
-(defn consume-item-batch-and-process [batch-size]
-  (let [consumer-config (merge zk-config
+#_(defn consume-item-batch-and-process [batch-size]
+  (let [consumer-config (merge  {"zookeeper.connect" zookeeper-cli}
                                {"group.id" "clj-kafka.consumer"
                                 "auto.offset.reset" "smallest"
                                 "zookeeper.session.timeout.ms" "400"
@@ -49,9 +96,10 @@
       (doall
        (pmap do-for-each (take batch-size (zkc/messages consumer [topic])))))))
 
-(def switch (atom true)) ; a switch to stop workers
+#_(def switch (atom true)) ; a switch to stop workers
 
-(defn run! []
+#_(defn run! []
   (while @switch
     (Thread/sleep 1000)
     (do (consume-item-batch-and-process 2))))
+
