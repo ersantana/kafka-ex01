@@ -29,8 +29,8 @@
   "Get groups"
   [zookeeper-cli]
   (let [cli (zk/connect zookeeper-cli)
-        node "/consumers"]
-    (if (zk/exists cli node) (do (prn "groups:")(prn (zk/children cli node))) (prn "no group"))))
+        znode "/consumers"]
+    (if (zk/exists cli znode) (do (prn "groups:")(prn (zk/children cli znode))) (prn "no group"))))
   
 (defn get-offset
   "Get the offset of a topic"
@@ -52,8 +52,10 @@
         offset 0
         fetch-size 4096
         client-id "cli-id"
-        simple-consumer (s/consumer (-> kafka-cli (clojure.string/split #":") first) (-> kafka-cli (clojure.string/split #":") second read-string) client-id)
-        messages (s/messages simple-consumer client-id topic part offset fetch-size)]
+        kafka-cli (clojure.string/split kafka-cli #":")
+        kafka-port (if (> 1 (count kafka-cli)) (read-string (second kafka-cli)) 2181)
+        simple-consumer (s/consumer (first kafka-cli) kafka-port  client-id)
+        messages (try (s/messages simple-consumer client-id topic part offset fetch-size) (catch Exception e []))]
     (prn "messages")
     (prn "count= " (count messages))
     (prn "offset=" (get-offset zookeeper-cli topic group-id))
